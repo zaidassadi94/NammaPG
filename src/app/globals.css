@@ -1,0 +1,30 @@
+@import "tailwindcss";
+
+:root {
+  --foreground: #1a1a1a;
+  --background: #f8f9fa;
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* High contrast for PG owner */
+input, select, textarea {
+  font-size: 16px !important; /* Prevents iOS zoom */
+}
+
+/* Print styles */
+@media print {
+  nav, header, .no-print {
+    display: none !important;
+  }
+  main {
+    padding: 0 !important;
+    max-width: 100% !important;
+  }
+}
