@@ -9,7 +9,7 @@ import Card from '@/components/ui/Card'
 import Badge from '@/components/ui/Badge'
 import Select from '@/components/ui/Select'
 import ConfirmDialog from '@/components/ui/ConfirmDialog'
-import { createClient } from '@/lib/supabase-browser'
+import { mockMaintenanceLogs, mockRooms, mockFloors, mockTenants, mockBeds } from '@/lib/mock-data'
 import { formatCurrency, formatDate, cn } from '@/lib/utils'
 import type { MaintenanceLog, MaintenanceStatus, Room, Tenant } from '@/types/database'
 
@@ -43,7 +43,6 @@ const NEXT_STATUS: Record<string, MaintenanceStatus> = {
 
 export default function MaintenancePage() {
   const { ownerProfile, loading: appLoading } = useApp()
-  const supabase = createClient()
 
   const [loading, setLoading] = useState(true)
   const [logs, setLogs] = useState<MaintenanceLogWithDetails[]>([])
@@ -58,43 +57,40 @@ export default function MaintenancePage() {
 
   useEffect(() => {
     if (!ownerProfile) return
-    fetchRooms()
-    fetchLogs()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ownerProfile])
 
-  async function fetchRooms() {
-    const { data } = await supabase
-      .from('rooms')
-      .select('id, name, floor:floors(name)')
-      .eq('owner_id', ownerProfile!.id)
-      .order('sort_order')
-
-    if (data) {
-      const mapped: RoomOption[] = data.map((r: any) => ({
+    // Build room options from mock data
+    const mapped: RoomOption[] = mockRooms.map((r) => {
+      const floor = mockFloors.find((f) => f.id === r.floor_id)
+      return {
         id: r.id,
         name: r.name,
-        floor_name: r.floor?.name || '',
-      }))
-      setRooms(mapped)
-    }
-  }
+        floor_name: floor?.name || '',
+      }
+    })
+    setRooms(mapped)
 
-  async function fetchLogs() {
-    setLoading(true)
-    const { data } = await supabase
-      .from('maintenance_logs')
-      .select(
-        '*, room:rooms(name, floor:floors(name)), tenant:tenants!reported_by_tenant_id(full_name)'
-      )
-      .eq('owner_id', ownerProfile!.id)
-      .order('date_reported', { ascending: false })
+    // Build logs with joined details from mock data
+    const logsWithDetails: MaintenanceLogWithDetails[] = [...mockMaintenanceLogs]
+      .sort((a, b) => b.date_reported.localeCompare(a.date_reported))
+      .map((log) => {
+        const room = mockRooms.find((r) => r.id === log.room_id)
+        const floor = room ? mockFloors.find((f) => f.id === room.floor_id) : undefined
+        const tenant = log.reported_by_tenant_id
+          ? mockTenants.find((t) => t.id === log.reported_by_tenant_id) || null
+          : null
 
-    if (data) {
-      setLogs(data as MaintenanceLogWithDetails[])
-    }
+        return {
+          ...log,
+          room: room
+            ? { ...room, floor: floor ? { name: floor.name } : undefined }
+            : undefined,
+          tenant: tenant ? { full_name: tenant.full_name } : null,
+        }
+      })
+
+    setLogs(logsWithDetails)
     setLoading(false)
-  }
+  }, [ownerProfile])
 
   function handleStatusTap(log: MaintenanceLogWithDetails) {
     if (log.status === 'fixed') return
@@ -107,21 +103,19 @@ export default function MaintenancePage() {
     setConfirmLoading(true)
 
     const nextStatus = NEXT_STATUS[selectedLog.status]
-    const updates: Record<string, any> = { status: nextStatus }
+    const dateFixed = nextStatus === 'fixed' ? new Date().toISOString().split('T')[0] : selectedLog.date_fixed
 
-    if (nextStatus === 'fixed') {
-      updates.date_fixed = new Date().toISOString().split('T')[0]
-    }
-
-    await supabase
-      .from('maintenance_logs')
-      .update(updates)
-      .eq('id', selectedLog.id)
+    setLogs((prev) =>
+      prev.map((log) =>
+        log.id === selectedLog.id
+          ? { ...log, status: nextStatus, date_fixed: dateFixed }
+          : log
+      )
+    )
 
     setConfirmLoading(false)
     setConfirmOpen(false)
     setSelectedLog(null)
-    await fetchLogs()
   }
 
   // Build room filter options grouped by floor

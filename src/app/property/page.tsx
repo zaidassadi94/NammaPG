@@ -1,9 +1,9 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import { useApp } from '@/contexts/AppContext'
 import AppShell from '@/components/layout/AppShell'
-import { createClient } from '@/lib/supabase-browser'
+import { mockFloors, mockRooms, mockBeds, mockTenants } from '@/lib/mock-data'
 import Button from '@/components/ui/Button'
 import Input from '@/components/ui/Input'
 import Modal from '@/components/ui/Modal'
@@ -12,7 +12,7 @@ import Badge from '@/components/ui/Badge'
 import ConfirmDialog from '@/components/ui/ConfirmDialog'
 import ToggleSwitch from '@/components/ui/ToggleSwitch'
 import Select from '@/components/ui/Select'
-import type { FloorWithRooms, RoomWithBeds, Bed, Tenant } from '@/types/database'
+import type { FloorWithRooms, RoomWithBeds, Bed } from '@/types/database'
 import { cn } from '@/lib/utils'
 
 type ModalMode =
@@ -27,12 +27,34 @@ type ConfirmMode =
   | { type: 'deleteRoom'; roomId: string; roomName: string }
   | null
 
+function buildFloorsWithRooms(): FloorWithRooms[] {
+  return mockFloors.map((floor) => ({
+    ...floor,
+    rooms: mockRooms
+      .filter((r) => r.floor_id === floor.id)
+      .sort((a, b) => a.sort_order - b.sort_order)
+      .map((room) => ({
+        ...room,
+        beds: mockBeds
+          .filter((b) => b.room_id === room.id)
+          .sort((a, b) => a.label.localeCompare(b.label)),
+      })),
+  }))
+}
+
+function buildTenantMap(): Record<string, { full_name: string }> {
+  const map: Record<string, { full_name: string }> = {}
+  mockTenants.forEach((t) => {
+    map[t.id] = t
+  })
+  return map
+}
+
 export default function PropertyPage() {
-  const { t, ownerProfile } = useApp()
-  const supabase = createClient()
+  const { t } = useApp()
 
   const [floors, setFloors] = useState<FloorWithRooms[]>([])
-  const [tenantMap, setTenantMap] = useState<Record<string, Tenant>>({})
+  const [tenantMap] = useState<Record<string, { full_name: string }>>(buildTenantMap)
   const [expandedFloors, setExpandedFloors] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -46,71 +68,12 @@ export default function PropertyPage() {
   const [confirm, setConfirm] = useState<ConfirmMode>(null)
   const [confirmError, setConfirmError] = useState('')
 
-  const ownerId = ownerProfile?.id
-
-  const fetchData = useCallback(async () => {
-    if (!ownerId) return
-    setLoading(true)
-
-    const { data: floorsData } = await supabase
-      .from('floors')
-      .select('*, rooms(*, beds(*))')
-      .eq('owner_id', ownerId)
-      .order('sort_order', { ascending: true })
-
-    if (floorsData) {
-      // Sort rooms and beds within each floor
-      const sorted = floorsData.map((floor: FloorWithRooms) => ({
-        ...floor,
-        rooms: (floor.rooms || [])
-          .sort((a: RoomWithBeds, b: RoomWithBeds) => a.sort_order - b.sort_order)
-          .map((room: RoomWithBeds) => ({
-            ...room,
-            beds: (room.beds || []).sort((a: Bed, b: Bed) => a.label.localeCompare(b.label)),
-          })),
-      }))
-      setFloors(sorted)
-
-      // Expand all floors by default on first load
-      if (expandedFloors.size === 0) {
-        setExpandedFloors(new Set(sorted.map((f: FloorWithRooms) => f.id)))
-      }
-
-      // Collect tenant IDs from beds
-      const tenantIds = new Set<string>()
-      sorted.forEach((floor: FloorWithRooms) =>
-        floor.rooms.forEach((room: RoomWithBeds) =>
-          room.beds.forEach((bed: Bed) => {
-            if (bed.tenant_id) tenantIds.add(bed.tenant_id)
-          })
-        )
-      )
-
-      if (tenantIds.size > 0) {
-        const { data: tenants } = await supabase
-          .from('tenants')
-          .select('*')
-          .in('id', Array.from(tenantIds))
-
-        if (tenants) {
-          const map: Record<string, Tenant> = {}
-          tenants.forEach((t: Tenant) => {
-            map[t.id] = t
-          })
-          setTenantMap(map)
-        }
-      } else {
-        setTenantMap({})
-      }
-    }
-
-    setLoading(false)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ownerId])
-
   useEffect(() => {
-    fetchData()
-  }, [fetchData])
+    const initialFloors = buildFloorsWithRooms()
+    setFloors(initialFloors)
+    setExpandedFloors(new Set(initialFloors.map((f) => f.id)))
+    setLoading(false)
+  }, [])
 
   // --- Toggle floor expansion ---
   const toggleFloor = (floorId: string) => {
@@ -126,17 +89,6 @@ export default function PropertyPage() {
   }
 
   // --- Check if any bed in a set of rooms is non-empty ---
-  const hasNonEmptyBeds = (rooms: RoomWithBeds[]): boolean => {
-    return rooms.some((room) =>
-      room.beds.some(
-        (bed) =>
-          bed.status === 'occupied' ||
-          bed.status === 'notice_period' ||
-          bed.status === 'blocked'
-      )
-    )
-  }
-
   const hasOccupiedOrNoticeBeds = (rooms: RoomWithBeds[]): boolean => {
     return rooms.some((room) =>
       room.beds.some(
@@ -146,42 +98,46 @@ export default function PropertyPage() {
   }
 
   // --- Add Floor ---
-  const handleAddFloor = async () => {
-    if (!ownerId || !modalInput.trim()) return
+  const handleAddFloor = () => {
+    if (!modalInput.trim()) return
     setSaving(true)
 
     const maxSort = floors.reduce((max, f) => Math.max(max, f.sort_order), 0)
 
-    await supabase.from('floors').insert({
-      owner_id: ownerId,
+    const newFloor: FloorWithRooms = {
+      id: Math.random().toString(36).slice(2),
+      owner_id: 'mock-owner-001',
       name: modalInput.trim(),
       sort_order: maxSort + 1,
-    })
+      created_at: new Date().toISOString(),
+      rooms: [],
+    }
 
+    setFloors((prev) => [...prev, newFloor])
+    setExpandedFloors((prev) => new Set([...prev, newFloor.id]))
     setSaving(false)
     setModal(null)
     setModalInput('')
-    await fetchData()
   }
 
   // --- Rename Floor ---
-  const handleRenameFloor = async (floorId: string) => {
+  const handleRenameFloor = (floorId: string) => {
     if (!modalInput.trim()) return
     setSaving(true)
 
-    await supabase
-      .from('floors')
-      .update({ name: modalInput.trim() })
-      .eq('id', floorId)
+    setFloors((prev) =>
+      prev.map((f) =>
+        f.id === floorId ? { ...f, name: modalInput.trim() } : f
+      )
+    )
 
     setSaving(false)
     setModal(null)
     setModalInput('')
-    await fetchData()
   }
 
   // --- Delete Floor ---
-  const handleDeleteFloor = async (floorId: string) => {
+  const handleDeleteFloor = (floorId: string) => {
     const floor = floors.find((f) => f.id === floorId)
     if (!floor) return
 
@@ -191,23 +147,15 @@ export default function PropertyPage() {
     }
 
     setSaving(true)
-
-    // Delete beds, then rooms, then floor
-    for (const room of floor.rooms) {
-      await supabase.from('beds').delete().eq('room_id', room.id)
-    }
-    await supabase.from('rooms').delete().eq('floor_id', floorId)
-    await supabase.from('floors').delete().eq('id', floorId)
-
+    setFloors((prev) => prev.filter((f) => f.id !== floorId))
     setSaving(false)
     setConfirm(null)
     setConfirmError('')
-    await fetchData()
   }
 
   // --- Add Room ---
-  const handleAddRoom = async (floorId: string) => {
-    if (!ownerId || !modalInput.trim()) return
+  const handleAddRoom = (floorId: string) => {
+    if (!modalInput.trim()) return
     setSaving(true)
 
     const floor = floors.find((f) => f.id === floorId)
@@ -216,59 +164,63 @@ export default function PropertyPage() {
       : 0
 
     const bedCount = parseInt(bedCountInput, 10) || 1
+    const roomId = Math.random().toString(36).slice(2)
 
-    // Create room
-    const { data: newRoom } = await supabase
-      .from('rooms')
-      .insert({
-        floor_id: floorId,
-        owner_id: ownerId,
-        name: modalInput.trim(),
-        bed_count: bedCount,
-        is_private: false,
-        sort_order: maxSort + 1,
-      })
-      .select()
-      .single()
+    const newBeds: Bed[] = Array.from({ length: bedCount }, (_, i) => ({
+      id: Math.random().toString(36).slice(2),
+      room_id: roomId,
+      owner_id: 'mock-owner-001',
+      label: `Bed ${i + 1}`,
+      status: 'empty' as const,
+      tenant_id: null,
+      created_at: new Date().toISOString(),
+    }))
 
-    if (newRoom) {
-      // Auto-create beds
-      const beds = Array.from({ length: bedCount }, (_, i) => ({
-        room_id: newRoom.id,
-        owner_id: ownerId,
-        label: `Bed ${i + 1}`,
-        status: 'empty' as const,
-        tenant_id: null,
-      }))
-
-      await supabase.from('beds').insert(beds)
+    const newRoom: RoomWithBeds = {
+      id: roomId,
+      floor_id: floorId,
+      owner_id: 'mock-owner-001',
+      name: modalInput.trim(),
+      bed_count: bedCount,
+      is_private: false,
+      sort_order: maxSort + 1,
+      created_at: new Date().toISOString(),
+      beds: newBeds,
     }
+
+    setFloors((prev) =>
+      prev.map((f) =>
+        f.id === floorId ? { ...f, rooms: [...f.rooms, newRoom] } : f
+      )
+    )
 
     setSaving(false)
     setModal(null)
     setModalInput('')
     setBedCountInput('1')
-    await fetchData()
   }
 
   // --- Rename Room ---
-  const handleRenameRoom = async (roomId: string) => {
+  const handleRenameRoom = (roomId: string) => {
     if (!modalInput.trim()) return
     setSaving(true)
 
-    await supabase
-      .from('rooms')
-      .update({ name: modalInput.trim() })
-      .eq('id', roomId)
+    setFloors((prev) =>
+      prev.map((f) => ({
+        ...f,
+        rooms: f.rooms.map((r) =>
+          r.id === roomId ? { ...r, name: modalInput.trim() } : r
+        ),
+      }))
+    )
 
     setSaving(false)
     setModal(null)
     setModalInput('')
-    await fetchData()
   }
 
   // --- Delete Room ---
-  const handleDeleteRoom = async (roomId: string) => {
+  const handleDeleteRoom = (roomId: string) => {
     const room = floors
       .flatMap((f) => f.rooms)
       .find((r) => r.id === roomId)
@@ -284,56 +236,67 @@ export default function PropertyPage() {
     }
 
     setSaving(true)
-
-    await supabase.from('beds').delete().eq('room_id', roomId)
-    await supabase.from('rooms').delete().eq('id', roomId)
-
+    setFloors((prev) =>
+      prev.map((f) => ({
+        ...f,
+        rooms: f.rooms.filter((r) => r.id !== roomId),
+      }))
+    )
     setSaving(false)
     setConfirm(null)
     setConfirmError('')
-    await fetchData()
   }
 
   // --- Private Room Toggle ---
-  const handlePrivateToggle = async (room: RoomWithBeds, enabled: boolean) => {
-    if (!ownerId) return
-
+  const handlePrivateToggle = (room: RoomWithBeds, enabled: boolean) => {
     if (enabled) {
-      // Set all beds to blocked
-      await supabase
-        .from('beds')
-        .update({ status: 'blocked' })
-        .eq('room_id', room.id)
-
-      await supabase
-        .from('rooms')
-        .update({ is_private: true })
-        .eq('id', room.id)
+      setFloors((prev) =>
+        prev.map((f) => ({
+          ...f,
+          rooms: f.rooms.map((r) =>
+            r.id === room.id
+              ? {
+                  ...r,
+                  is_private: true,
+                  beds: r.beds.map((b) => ({ ...b, status: 'blocked' as const })),
+                }
+              : r
+          ),
+        }))
+      )
     } else {
-      // Only allow if no active/notice_period tenants
       const hasActiveTenants = room.beds.some(
         (bed) => bed.status === 'occupied' || bed.status === 'notice_period'
       )
       if (hasActiveTenants) return
 
-      // Set all beds to empty
-      await supabase
-        .from('beds')
-        .update({ status: 'empty', tenant_id: null })
-        .eq('room_id', room.id)
-
-      await supabase
-        .from('rooms')
-        .update({ is_private: false })
-        .eq('id', room.id)
+      setFloors((prev) =>
+        prev.map((f) => ({
+          ...f,
+          rooms: f.rooms.map((r) =>
+            r.id === room.id
+              ? {
+                  ...r,
+                  is_private: false,
+                  beds: r.beds.map((b) => ({
+                    ...b,
+                    status: 'empty' as const,
+                    tenant_id: null,
+                  })),
+                }
+              : r
+          ),
+        }))
+      )
     }
-
-    await fetchData()
   }
 
   // --- Bed status badge ---
   const renderBedBadge = (bed: Bed) => {
-    const tenantName = bed.tenant_id ? tenantMap[bed.tenant_id]?.full_name : null
+    const tenantName = bed.tenant_id
+      ? (tenantMap[bed.tenant_id]?.full_name ??
+        mockTenants.find((t) => t.id === bed.tenant_id)?.full_name)
+      : null
 
     switch (bed.status) {
       case 'empty':

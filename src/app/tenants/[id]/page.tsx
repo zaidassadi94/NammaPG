@@ -1,10 +1,10 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import AppShell from '@/components/layout/AppShell'
 import { useApp } from '@/contexts/AppContext'
-import { createClient } from '@/lib/supabase-browser'
+import { mockTenants, mockBeds, mockRooms, mockFloors, mockRentCycles, mockPayments, mockDepositInstallments } from '@/lib/mock-data'
 import Button from '@/components/ui/Button'
 import Card from '@/components/ui/Card'
 import Badge from '@/components/ui/Badge'
@@ -40,13 +40,52 @@ export default function TenantDetailPage() {
   const { id } = useParams<{ id: string }>()
   const router = useRouter()
   const { t, ownerProfile } = useApp()
-  const supabase = createClient()
 
-  const [tenant, setTenant] = useState<TenantFull | null>(null)
-  const [rentCycles, setRentCycles] = useState<(RentCycle & { payments: Payment[] })[]>([])
-  const [deposits, setDeposits] = useState<DepositInstallment[]>([])
+  // Build tenant with joined bed/room/floor data
+  const initialTenant: TenantFull | null = useMemo(() => {
+    const raw = mockTenants.find((t) => t.id === id)
+    if (!raw) return null
+    const bed = mockBeds.find((b) => b.id === raw.bed_id)
+    const room = bed ? mockRooms.find((r) => r.id === bed.room_id) : undefined
+    const floor = room ? mockFloors.find((f) => f.id === room.floor_id) : undefined
+    return {
+      ...raw,
+      bed: bed
+        ? {
+            ...bed,
+            room: room
+              ? {
+                  ...room,
+                  floor: floor || undefined,
+                }
+              : undefined,
+          }
+        : undefined,
+    }
+  }, [id])
+
+  // Build rent cycles with nested payments
+  const initialCycles = useMemo(() => {
+    const cycles = mockRentCycles
+      .filter((rc) => rc.tenant_id === id)
+      .sort((a, b) => (b.due_date > a.due_date ? 1 : -1))
+    return cycles.map((cycle) => ({
+      ...cycle,
+      payments: mockPayments.filter((p) => p.rent_cycle_id === cycle.id),
+    }))
+  }, [id])
+
+  const initialDeposits = useMemo(() => {
+    return mockDepositInstallments
+      .filter((d) => d.tenant_id === id)
+      .sort((a, b) => (b.payment_date > a.payment_date ? 1 : -1))
+  }, [id])
+
+  const [tenant, setTenant] = useState<TenantFull | null>(initialTenant)
+  const [rentCycles, setRentCycles] = useState<(RentCycle & { payments: Payment[] })[]>(initialCycles)
+  const [deposits, setDeposits] = useState<DepositInstallment[]>(initialDeposits)
   const [settlement, setSettlement] = useState<Settlement | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [loading] = useState(false)
 
   // Modals
   const [paymentModal, setPaymentModal] = useState(false)
@@ -76,43 +115,6 @@ export default function TenantDetailPage() {
   const [saving, setSaving] = useState(false)
   const [activeTab, setActiveTab] = useState<'profile' | 'payments' | 'deposits'>('profile')
 
-  const loadData = useCallback(async () => {
-    if (!ownerProfile || !id) return
-
-    const [tenantRes, cyclesRes, depositsRes, settlementRes] = await Promise.all([
-      supabase
-        .from('tenants')
-        .select('*, bed:beds(*, room:rooms(*, floor:floors(*)))')
-        .eq('id', id)
-        .single(),
-      supabase
-        .from('rent_cycles')
-        .select('*, payments(*)')
-        .eq('tenant_id', id)
-        .order('due_date', { ascending: false }),
-      supabase
-        .from('deposit_installments')
-        .select('*')
-        .eq('tenant_id', id)
-        .order('payment_date', { ascending: false }),
-      supabase
-        .from('settlements')
-        .select('*')
-        .eq('tenant_id', id)
-        .maybeSingle(),
-    ])
-
-    if (tenantRes.data) setTenant(tenantRes.data)
-    if (cyclesRes.data) setRentCycles(cyclesRes.data)
-    if (depositsRes.data) setDeposits(depositsRes.data)
-    if (settlementRes.data) setSettlement(settlementRes.data)
-    setLoading(false)
-  }, [ownerProfile, id, supabase])
-
-  useEffect(() => {
-    loadData()
-  }, [loadData])
-
   const totalDepositCollected = deposits.reduce((sum, d) => sum + d.amount, 0)
   const depositBalance = (tenant?.security_deposit || 0) - totalDepositCollected
   const totalUnpaidRent = rentCycles
@@ -131,14 +133,15 @@ export default function TenantDetailPage() {
     setPaymentModal(true)
   }
 
-  async function handleRecordPayment() {
+  function handleRecordPayment() {
     if (!selectedCycle || !tenant || !ownerProfile || !payAmount) return
     setSaving(true)
 
     const amountPaise = toPaise(parseFloat(payAmount))
     const lateFeePaise = payLateFee ? toPaise(parseFloat(payLateFee)) : 0
 
-    await supabase.from('payments').insert({
+    const newPayment: Payment = {
+      id: Math.random().toString(36).slice(2),
       rent_cycle_id: selectedCycle.id,
       tenant_id: tenant.id,
       owner_id: ownerProfile.id,
@@ -147,43 +150,48 @@ export default function TenantDetailPage() {
       payment_date: payDate,
       late_fee: lateFeePaise,
       notes: payNotes || null,
-    })
+      created_at: new Date().toISOString(),
+    }
 
     const newPaid = selectedCycle.amount_paid + amountPaise
     const newStatus =
       newPaid >= selectedCycle.amount_due ? 'paid' : newPaid > 0 ? 'partial' : 'pending'
 
-    await supabase
-      .from('rent_cycles')
-      .update({ amount_paid: newPaid, status: newStatus })
-      .eq('id', selectedCycle.id)
+    setRentCycles((prev) =>
+      prev.map((c) =>
+        c.id === selectedCycle.id
+          ? { ...c, amount_paid: newPaid, status: newStatus as RentCycle['status'], payments: [...c.payments, newPayment] }
+          : c
+      )
+    )
 
     setPaymentModal(false)
     setSaving(false)
-    await loadData()
   }
 
   // Deposit Installment
-  async function handleAddDeposit() {
+  function handleAddDeposit() {
     if (!tenant || !ownerProfile || !depAmount) return
     setSaving(true)
 
-    await supabase.from('deposit_installments').insert({
+    const newDeposit: DepositInstallment = {
+      id: Math.random().toString(36).slice(2),
       tenant_id: tenant.id,
       owner_id: ownerProfile.id,
       amount: toPaise(parseFloat(depAmount)),
       mode: depMode,
       payment_date: depDate,
       notes: depNotes || null,
-    })
+      created_at: new Date().toISOString(),
+    }
 
+    setDeposits((prev) => [newDeposit, ...prev])
     setDepositModal(false)
     setSaving(false)
-    await loadData()
   }
 
   // Start Notice Period
-  async function handleStartNotice() {
+  function handleStartNotice() {
     if (!tenant) return
     setSaving(true)
 
@@ -191,74 +199,45 @@ export default function TenantDetailPage() {
     const expected = new Date(today)
     expected.setDate(expected.getDate() + tenant.notice_period_days)
 
-    await supabase
-      .from('tenants')
-      .update({
-        status: 'notice_period',
-        notice_start_date: today.toISOString().split('T')[0],
-        expected_checkout_date: expected.toISOString().split('T')[0],
-      })
-      .eq('id', tenant.id)
-
-    if (tenant.bed_id) {
-      await supabase.from('beds').update({ status: 'notice_period' }).eq('id', tenant.bed_id)
-    }
+    setTenant({
+      ...tenant,
+      status: 'notice_period',
+      notice_start_date: today.toISOString().split('T')[0],
+      expected_checkout_date: expected.toISOString().split('T')[0],
+    })
 
     setNoticeConfirm(false)
     setSaving(false)
-    await loadData()
   }
 
   // Check Out
-  async function handleCheckout() {
+  function handleCheckout() {
     if (!tenant) return
     setSaving(true)
 
     const today = new Date().toISOString().split('T')[0]
 
-    await supabase
-      .from('tenants')
-      .update({
-        status: 'checked_out',
-        actual_checkout_date: today,
-      })
-      .eq('id', tenant.id)
-
-    // Revert bed(s) to empty
-    if (tenant.bed_id) {
-      if (tenant.room_type === 'private' && tenant.bed) {
-        await supabase
-          .from('beds')
-          .update({ status: 'empty', tenant_id: null })
-          .eq('room_id', tenant.bed.room_id)
-      } else {
-        await supabase
-          .from('beds')
-          .update({ status: 'empty', tenant_id: null })
-          .eq('id', tenant.bed_id)
-      }
-    }
-
-    // If private room, toggle off
-    if (tenant.room_type === 'private' && tenant.bed?.room_id) {
-      await supabase.from('rooms').update({ is_private: false }).eq('id', tenant.bed.room_id)
-    }
+    setTenant({
+      ...tenant,
+      status: 'checked_out',
+      actual_checkout_date: today,
+    })
 
     setCheckoutConfirm(false)
     setSaving(false)
     setSettlementModal(true)
-    await loadData()
   }
 
   // Settlement
-  async function handleSettlement() {
+  function handleSettlement() {
     if (!tenant || !ownerProfile) return
     setSaving(true)
 
     const damagesPaise = damagesAmount ? toPaise(parseFloat(damagesAmount)) : 0
     const refund = totalDepositCollected - totalUnpaidRent - damagesPaise
 
-    await supabase.from('settlements').insert({
+    const newSettlement: Settlement = {
+      id: Math.random().toString(36).slice(2),
       tenant_id: tenant.id,
       owner_id: ownerProfile.id,
       total_deposit_collected: totalDepositCollected,
@@ -267,11 +246,12 @@ export default function TenantDetailPage() {
       damages_notes: damagesNotes || null,
       refund_amount: refund,
       settlement_date: new Date().toISOString().split('T')[0],
-    })
+      created_at: new Date().toISOString(),
+    }
 
+    setSettlement(newSettlement)
     setSettlementModal(false)
     setSaving(false)
-    await loadData()
   }
 
   if (loading) {

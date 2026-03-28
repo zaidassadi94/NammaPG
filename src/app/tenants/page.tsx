@@ -1,10 +1,10 @@
 'use client'
 
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useMemo } from 'react'
 import Link from 'next/link'
 import AppShell from '@/components/layout/AppShell'
 import { useApp } from '@/contexts/AppContext'
-import { createClient } from '@/lib/supabase-browser'
+import { mockTenants, mockBeds, mockRooms, mockFloors, mockRentCycles, mockPayments, mockDepositInstallments } from '@/lib/mock-data'
 import Button from '@/components/ui/Button'
 import Card from '@/components/ui/Card'
 import Badge from '@/components/ui/Badge'
@@ -22,32 +22,33 @@ const statusBadge: Record<TenantStatus, { variant: 'green' | 'yellow' | 'gray'; 
 
 export default function TenantsPage() {
   const { t, ownerProfile, loading: appLoading } = useApp()
-  const supabase = createClient()
 
-  const [tenants, setTenants] = useState<TenantWithBed[]>([])
-  const [loading, setLoading] = useState(true)
+  // Build tenants with joined bed/room/floor data from mock data
+  const tenantsWithBeds: TenantWithBed[] = useMemo(() => {
+    return mockTenants.map((tenant) => {
+      const bed = mockBeds.find((b) => b.id === tenant.bed_id)
+      const room = bed ? mockRooms.find((r) => r.id === bed.room_id) : undefined
+      const floor = room ? mockFloors.find((f) => f.id === room.floor_id) : undefined
+      return {
+        ...tenant,
+        bed: bed
+          ? {
+              ...bed,
+              room: room
+                ? {
+                    ...room,
+                    floor: floor || undefined,
+                  }
+                : undefined,
+            }
+          : undefined,
+      } as TenantWithBed
+    })
+  }, [])
+
+  const [tenants] = useState<TenantWithBed[]>(tenantsWithBeds)
   const [search, setSearch] = useState('')
   const [activeTab, setActiveTab] = useState<FilterTab>('all')
-
-  useEffect(() => {
-    if (!ownerProfile) return
-
-    const fetchTenants = async () => {
-      setLoading(true)
-      const { data, error } = await supabase
-        .from('tenants')
-        .select('*, bed:beds(*, room:rooms(*, floor:floors(*)))')
-        .eq('owner_id', ownerProfile.id)
-        .order('created_at', { ascending: false })
-
-      if (!error && data) {
-        setTenants(data as TenantWithBed[])
-      }
-      setLoading(false)
-    }
-
-    fetchTenants()
-  }, [ownerProfile])
 
   const filteredTenants = useMemo(() => {
     let result = tenants
@@ -117,9 +118,7 @@ export default function TenantsPage() {
         ))}
       </div>
 
-      {loading ? (
-        <p className="text-center text-gray-500 py-10">{t('loading')}</p>
-      ) : filteredTenants.length === 0 ? (
+      {filteredTenants.length === 0 ? (
         <p className="text-center text-gray-500 py-10">{t('noData')}</p>
       ) : (
         <div className="space-y-3">

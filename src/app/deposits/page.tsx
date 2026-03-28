@@ -1,6 +1,6 @@
 'use client'
 
-import { Suspense, useEffect, useState, useCallback } from 'react'
+import { Suspense, useEffect, useState, useMemo } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { useApp } from '@/contexts/AppContext'
 import AppShell from '@/components/layout/AppShell'
@@ -10,7 +10,7 @@ import Button from '@/components/ui/Button'
 import Input from '@/components/ui/Input'
 import Modal from '@/components/ui/Modal'
 import Select from '@/components/ui/Select'
-import { createClient } from '@/lib/supabase-browser'
+import { mockTenants, mockDepositInstallments } from '@/lib/mock-data'
 import { formatCurrency, formatDate, toPaise, toRupees } from '@/lib/utils'
 import type { Tenant, DepositInstallment, PaymentMode } from '@/types/database'
 
@@ -25,13 +25,14 @@ export default function DepositsPageWrapper() {
 function DepositsPage() {
   const { t, ownerProfile, loading: appLoading } = useApp()
   const searchParams = useSearchParams()
-  const supabase = createClient()
 
-  const [tenants, setTenants] = useState<Tenant[]>([])
+  const [tenants] = useState<Tenant[]>(() =>
+    mockTenants
+      .filter((t) => t.status === 'active' || t.status === 'notice_period')
+      .sort((a, b) => a.full_name.localeCompare(b.full_name))
+  )
   const [selectedTenantId, setSelectedTenantId] = useState<string>('')
-  const [selectedTenant, setSelectedTenant] = useState<Tenant | null>(null)
-  const [installments, setInstallments] = useState<DepositInstallment[]>([])
-  const [loading, setLoading] = useState(true)
+  const [allInstallments, setAllInstallments] = useState<DepositInstallment[]>(() => [...mockDepositInstallments])
 
   // Modal state
   const [modalOpen, setModalOpen] = useState(false)
@@ -41,57 +42,26 @@ function DepositsPage() {
   const [installmentNotes, setInstallmentNotes] = useState('')
   const [saving, setSaving] = useState(false)
 
-  // Fetch tenants
+  // Pre-select from URL param
   useEffect(() => {
-    if (!ownerProfile) return
-
-    async function fetchTenants() {
-      const { data } = await supabase
-        .from('tenants')
-        .select('*')
-        .eq('owner_id', ownerProfile!.id)
-        .in('status', ['active', 'notice_period'])
-        .order('full_name')
-
-      if (data) {
-        setTenants(data)
-        const urlTenant = searchParams.get('tenant')
-        if (urlTenant && data.some((t) => t.id === urlTenant)) {
-          setSelectedTenantId(urlTenant)
-        }
-      }
-      setLoading(false)
+    const urlTenant = searchParams.get('tenant')
+    if (urlTenant && tenants.some((t) => t.id === urlTenant)) {
+      setSelectedTenantId(urlTenant)
     }
+  }, [searchParams, tenants])
 
-    fetchTenants()
-  }, [ownerProfile])
+  const selectedTenant = useMemo(
+    () => tenants.find((t) => t.id === selectedTenantId) || null,
+    [selectedTenantId, tenants]
+  )
 
-  // Update selected tenant object when ID changes
-  useEffect(() => {
-    const tenant = tenants.find((t) => t.id === selectedTenantId) || null
-    setSelectedTenant(tenant)
-  }, [selectedTenantId, tenants])
-
-  // Fetch installments when tenant changes
-  const fetchInstallments = useCallback(async () => {
-    if (!ownerProfile || !selectedTenantId) {
-      setInstallments([])
-      return
-    }
-
-    const { data } = await supabase
-      .from('deposit_installments')
-      .select('*')
-      .eq('owner_id', ownerProfile.id)
-      .eq('tenant_id', selectedTenantId)
-      .order('payment_date', { ascending: false })
-
-    setInstallments(data || [])
-  }, [ownerProfile, selectedTenantId])
-
-  useEffect(() => {
-    fetchInstallments()
-  }, [fetchInstallments])
+  // Derive installments for selected tenant
+  const installments: DepositInstallment[] = useMemo(() => {
+    if (!selectedTenantId) return []
+    return allInstallments
+      .filter((inst) => inst.tenant_id === selectedTenantId)
+      .sort((a, b) => b.payment_date.localeCompare(a.payment_date))
+  }, [selectedTenantId, allInstallments])
 
   function openInstallmentModal() {
     setInstallmentAmount('')
@@ -101,7 +71,7 @@ function DepositsPage() {
     setModalOpen(true)
   }
 
-  async function handleSaveInstallment() {
+  function handleSaveInstallment() {
     if (!ownerProfile || !selectedTenantId || !installmentMode) return
 
     const amountPaise = toPaise(parseFloat(installmentAmount) || 0)
@@ -109,21 +79,21 @@ function DepositsPage() {
 
     setSaving(true)
 
-    const { error } = await supabase.from('deposit_installments').insert({
+    const newInstallment: DepositInstallment = {
+      id: Math.random().toString(36).slice(2),
       tenant_id: selectedTenantId,
       owner_id: ownerProfile.id,
       amount: amountPaise,
       mode: installmentMode,
       payment_date: installmentDate,
       notes: installmentNotes || null,
-    })
+      created_at: new Date().toISOString(),
+    }
+
+    setAllInstallments((prev) => [...prev, newInstallment])
 
     setSaving(false)
-
-    if (!error) {
-      setModalOpen(false)
-      await fetchInstallments()
-    }
+    setModalOpen(false)
   }
 
   const totalCollected = installments.reduce((sum, inst) => sum + inst.amount, 0)
@@ -135,7 +105,7 @@ function DepositsPage() {
     ...tenants.map((tn) => ({ value: tn.id, label: tn.full_name })),
   ]
 
-  if (appLoading || loading) {
+  if (appLoading) {
     return (
       <AppShell>
         <div className="flex items-center justify-center min-h-[60vh]">

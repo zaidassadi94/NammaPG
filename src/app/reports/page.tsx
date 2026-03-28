@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import AppShell from '@/components/layout/AppShell'
 import { useApp } from '@/contexts/AppContext'
-import { createClient } from '@/lib/supabase-browser'
+import { mockTenants, mockRentCycles, mockPayments, mockBeds, mockRooms, mockFloors, mockMaintenanceLogs } from '@/lib/mock-data'
 import Button from '@/components/ui/Button'
 import Card from '@/components/ui/Card'
 import Input from '@/components/ui/Input'
@@ -45,7 +45,6 @@ interface ExpenseRow {
 
 export default function ReportsPage() {
   const { ownerProfile } = useApp()
-  const supabase = createClient()
 
   const [activeTab, setActiveTab] = useState<ReportTab>('white')
   const [loading, setLoading] = useState(false)
@@ -69,140 +68,96 @@ export default function ReportsPage() {
   useEffect(() => {
     if (!ownerProfile) return
 
-    const loadFilterOptions = async () => {
-      const [{ data: tenantData }, { data: roomData }] = await Promise.all([
-        supabase
-          .from('tenants')
-          .select('id, full_name')
-          .eq('owner_id', ownerProfile.id)
-          .order('full_name'),
-        supabase
-          .from('rooms')
-          .select('id, name, floor_id, floors(name)')
-          .eq('owner_id', ownerProfile.id)
-          .order('name'),
-      ])
+    const tenantData = mockTenants
+      .filter((t) => t.owner_id === ownerProfile.id)
+      .map((t) => ({ id: t.id, full_name: t.full_name }))
+      .sort((a, b) => a.full_name.localeCompare(b.full_name))
+    setTenants(tenantData)
 
-      if (tenantData) setTenants(tenantData)
-      if (roomData) {
-        setRooms(
-          roomData.map((r: any) => ({
-            id: r.id,
-            name: r.name,
-            floor_name: r.floors?.name || '',
-          }))
-        )
-      }
-    }
-
-    loadFilterOptions()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const roomData = mockRooms
+      .filter((r) => r.owner_id === ownerProfile.id)
+      .map((r) => {
+        const floor = mockFloors.find((f) => f.id === r.floor_id)
+        return {
+          id: r.id,
+          name: r.name,
+          floor_name: floor?.name || '',
+        }
+      })
+      .sort((a, b) => a.name.localeCompare(b.name))
+    setRooms(roomData)
   }, [ownerProfile])
 
   // Fetch payment data (white or full report)
   const fetchPayments = useCallback(
-    async (digitalOnly: boolean) => {
+    (digitalOnly: boolean) => {
       if (!ownerProfile) return
       setLoading(true)
 
-      let query = supabase
-        .from('payments')
-        .select(
-          '*, rent_cycles(cycle_month, tenant_id), tenants(full_name, bed_id)'
-        )
-        .eq('owner_id', ownerProfile.id)
-        .order('payment_date', { ascending: false })
+      let filtered = mockPayments
+        .filter((p) => p.owner_id === ownerProfile.id)
+        .sort((a, b) => b.payment_date.localeCompare(a.payment_date))
 
       if (digitalOnly) {
-        query = query.eq('mode', 'digital')
+        filtered = filtered.filter((p) => p.mode === 'digital')
       }
 
       if (dateFrom) {
-        query = query.gte('payment_date', dateFrom)
+        filtered = filtered.filter((p) => p.payment_date >= dateFrom)
       }
       if (dateTo) {
-        query = query.lte('payment_date', dateTo)
+        filtered = filtered.filter((p) => p.payment_date <= dateTo)
       }
       if (tenantFilter !== 'all') {
-        query = query.eq('tenant_id', tenantFilter)
+        filtered = filtered.filter((p) => p.tenant_id === tenantFilter)
       }
 
-      const { data, error } = await query
-
-      if (error) {
-        console.error('Error fetching payments:', error)
-        setPaymentRows([])
-        setLoading(false)
-        return
-      }
-
-      let rows: PaymentRow[] = (data || []).map((p: any) => ({
-        tenantName: p.tenants?.full_name || 'Unknown',
-        cycleMonth: p.rent_cycles?.cycle_month
-          ? monthLabel(p.rent_cycles.cycle_month)
-          : '-',
-        amount: p.amount,
-        mode: p.mode,
-        paymentDate: p.payment_date,
-        lateFee: p.late_fee,
-      }))
-
-      // Room filter: if set, we need to filter by tenant bed -> room
+      // Room filter: filter by tenant bed -> room
       if (roomFilter !== 'all') {
-        // Get bed IDs for the selected room
-        const { data: beds } = await supabase
-          .from('beds')
-          .select('id, tenant_id')
-          .eq('room_id', roomFilter)
-
-        if (beds) {
-          const tenantIdsInRoom = new Set(
-            beds.filter((b: any) => b.tenant_id).map((b: any) => b.tenant_id)
-          )
-          // Also check tenant.bed_id from original data
-          const filteredPayments = (data || []).filter((p: any) => {
-            return tenantIdsInRoom.has(p.tenant_id)
-          })
-          rows = filteredPayments.map((p: any) => ({
-            tenantName: p.tenants?.full_name || 'Unknown',
-            cycleMonth: p.rent_cycles?.cycle_month
-              ? monthLabel(p.rent_cycles.cycle_month)
-              : '-',
-            amount: p.amount,
-            mode: p.mode,
-            paymentDate: p.payment_date,
-            lateFee: p.late_fee,
-          }))
-        }
+        const bedsInRoom = mockBeds.filter((b) => b.room_id === roomFilter)
+        const tenantIdsInRoom = new Set(
+          bedsInRoom.filter((b) => b.tenant_id).map((b) => b.tenant_id)
+        )
+        filtered = filtered.filter((p) => tenantIdsInRoom.has(p.tenant_id))
       }
+
+      const rows: PaymentRow[] = filtered.map((p) => {
+        const tenant = mockTenants.find((t) => t.id === p.tenant_id)
+        const rentCycle = mockRentCycles.find((rc) => rc.id === p.rent_cycle_id)
+        return {
+          tenantName: tenant?.full_name || 'Unknown',
+          cycleMonth: rentCycle?.cycle_month
+            ? monthLabel(rentCycle.cycle_month)
+            : '-',
+          amount: p.amount,
+          mode: p.mode,
+          paymentDate: p.payment_date,
+          lateFee: p.late_fee,
+        }
+      })
 
       setPaymentRows(rows)
       setLoading(false)
     },
-    [ownerProfile, supabase, dateFrom, dateTo, tenantFilter, roomFilter]
+    [ownerProfile, dateFrom, dateTo, tenantFilter, roomFilter]
   )
 
   // Fetch occupancy data
-  const fetchOccupancy = useCallback(async () => {
+  const fetchOccupancy = useCallback(() => {
     if (!ownerProfile) return
     setLoading(true)
 
-    const { data: beds } = await supabase
-      .from('beds')
-      .select('id, status, room_id, rooms(name)')
-      .eq('owner_id', ownerProfile.id)
+    const beds = mockBeds.filter((b) => b.owner_id === ownerProfile.id)
 
-    if (!beds) {
+    if (beds.length === 0) {
       setOccupancyRows([])
       setLoading(false)
       return
     }
 
-    // For a simplified occupancy snapshot, we show the current state
-    // and generate monthly rows based on the date range
     const totalBeds = beds.length
     const occupiedBeds = beds.filter(
-      (b: any) => b.status === 'occupied' || b.status === 'notice_period'
+      (b) => b.status === 'occupied' || b.status === 'notice_period'
     ).length
     const emptyBeds = totalBeds - occupiedBeds
 
@@ -233,50 +188,44 @@ export default function ReportsPage() {
 
     setOccupancyRows(rows)
     setLoading(false)
-  }, [ownerProfile, supabase, dateFrom, dateTo])
+  }, [ownerProfile, dateFrom, dateTo])
 
   // Fetch expense data
-  const fetchExpenses = useCallback(async () => {
+  const fetchExpenses = useCallback(() => {
     if (!ownerProfile) return
     setLoading(true)
 
-    let query = supabase
-      .from('maintenance_logs')
-      .select('*, rooms(name)')
-      .eq('owner_id', ownerProfile.id)
-      .not('repair_cost', 'is', null)
-      .order('date_reported', { ascending: false })
+    let filtered = mockMaintenanceLogs
+      .filter(
+        (m) =>
+          m.owner_id === ownerProfile.id && m.repair_cost != null
+      )
+      .sort((a, b) => b.date_reported.localeCompare(a.date_reported))
 
     if (dateFrom) {
-      query = query.gte('date_reported', dateFrom)
+      filtered = filtered.filter((m) => m.date_reported >= dateFrom)
     }
     if (dateTo) {
-      query = query.lte('date_reported', dateTo)
+      filtered = filtered.filter((m) => m.date_reported <= dateTo)
     }
     if (roomFilter !== 'all') {
-      query = query.eq('room_id', roomFilter)
+      filtered = filtered.filter((m) => m.room_id === roomFilter)
     }
 
-    const { data, error } = await query
-
-    if (error) {
-      console.error('Error fetching expenses:', error)
-      setExpenseRows([])
-      setLoading(false)
-      return
-    }
-
-    const rows: ExpenseRow[] = (data || []).map((m: any) => ({
-      roomName: m.rooms?.name || 'Unknown',
-      description: m.description,
-      dateReported: m.date_reported,
-      cost: m.repair_cost || 0,
-      status: m.status,
-    }))
+    const rows: ExpenseRow[] = filtered.map((m) => {
+      const room = mockRooms.find((r) => r.id === m.room_id)
+      return {
+        roomName: room?.name || 'Unknown',
+        description: m.description,
+        dateReported: m.date_reported,
+        cost: m.repair_cost || 0,
+        status: m.status,
+      }
+    })
 
     setExpenseRows(rows)
     setLoading(false)
-  }, [ownerProfile, supabase, dateFrom, dateTo, roomFilter])
+  }, [ownerProfile, dateFrom, dateTo, roomFilter])
 
   // Refetch when tab or filters change
   useEffect(() => {

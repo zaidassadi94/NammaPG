@@ -1,8 +1,13 @@
-import { type NextRequest } from 'next/server'
-import { updateSession } from '@/lib/supabase-middleware'
+import { NextResponse, type NextRequest } from 'next/server'
 
 export async function middleware(request: NextRequest) {
-  return await updateSession(request)
+  // Auth disabled for local preview — redirect login to dashboard
+  if (request.nextUrl.pathname.startsWith('/auth')) {
+    const url = request.nextUrl.clone()
+    url.pathname = '/dashboard'
+    return NextResponse.redirect(url)
+  }
+  return NextResponse.next()
 }
 
 export const config = {

@@ -1,15 +1,14 @@
 'use client'
 
-import { Suspense, useEffect, useState } from 'react'
+import { Suspense, useState, useEffect } from 'react'
 import { useSearchParams } from 'next/navigation'
 import AppShell from '@/components/layout/AppShell'
 import { useApp } from '@/contexts/AppContext'
-import { createClient } from '@/lib/supabase-browser'
 import Button from '@/components/ui/Button'
 import Card from '@/components/ui/Card'
 import Select from '@/components/ui/Select'
 import { formatDate, maskAadhaar } from '@/lib/utils'
-import type { Tenant } from '@/types/database'
+import { mockTenants } from '@/lib/mock-data'
 import jsPDF from 'jspdf'
 
 export default function CompliancePageWrapper() {
@@ -23,32 +22,14 @@ export default function CompliancePageWrapper() {
 function CompliancePage() {
   const { t, ownerProfile } = useApp()
   const searchParams = useSearchParams()
-  const supabase = createClient()
 
-  const [tenants, setTenants] = useState<Tenant[]>([])
+  const tenants = mockTenants.filter((t) => t.status === 'active' || t.status === 'notice_period')
   const [selectedTenantId, setSelectedTenantId] = useState('')
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
-    loadTenants()
-  }, [ownerProfile])
 
   useEffect(() => {
     const tenantParam = searchParams.get('tenant')
     if (tenantParam) setSelectedTenantId(tenantParam)
   }, [searchParams])
-
-  async function loadTenants() {
-    if (!ownerProfile) return
-    const { data } = await supabase
-      .from('tenants')
-      .select('*')
-      .eq('owner_id', ownerProfile.id)
-      .in('status', ['active', 'notice_period'])
-      .order('full_name')
-    setTenants(data || [])
-    setLoading(false)
-  }
 
   const selectedTenant = tenants.find((t) => t.id === selectedTenantId)
 
@@ -157,16 +138,6 @@ function CompliancePage() {
     doc.text(`Generated on: ${formatDate(new Date().toISOString())}`, leftCol, y)
 
     doc.save(`Form12_${selectedTenant.full_name.replace(/\s+/g, '_')}.pdf`)
-  }
-
-  if (loading) {
-    return (
-      <AppShell>
-        <div className="flex items-center justify-center py-20">
-          <p className="text-gray-500">{t('loading')}</p>
-        </div>
-      </AppShell>
-    )
   }
 
   return (

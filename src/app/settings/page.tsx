@@ -1,39 +1,26 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { useRouter } from 'next/navigation'
 import { useApp } from '@/contexts/AppContext'
 import AppShell from '@/components/layout/AppShell'
 import Card from '@/components/ui/Card'
 import Button from '@/components/ui/Button'
 import Input from '@/components/ui/Input'
-import { createClient } from '@/lib/supabase-browser'
 import type { ProrationType } from '@/types/database'
 
 export default function SettingsPage() {
-  const { t, language, setLanguage, ownerProfile, refreshProfile, user } = useApp()
-  const supabase = createClient()
-  const router = useRouter()
+  const { t, language, setLanguage, ownerProfile } = useApp()
 
-  // Profile form state
   const [name, setName] = useState('')
   const [phone, setPhone] = useState('')
   const [propertyName, setPropertyName] = useState('')
   const [propertyAddress, setPropertyAddress] = useState('')
   const [upiId, setUpiId] = useState('')
-
-  // Rent preference
   const [rentProration, setRentProration] = useState<ProrationType>('full_month')
-
-  // Notification preferences
   const [reminderDaysBefore, setReminderDaysBefore] = useState(3)
   const [overdueAlertDays, setOverdueAlertDays] = useState(5)
-
-  // Saving states
   const [savedSection, setSavedSection] = useState<string | null>(null)
-  const [saving, setSaving] = useState(false)
 
-  // Populate form from ownerProfile
   useEffect(() => {
     if (ownerProfile) {
       setName(ownerProfile.name || '')
@@ -52,70 +39,27 @@ export default function SettingsPage() {
     setTimeout(() => setSavedSection(null), 2000)
   }
 
-  const handleLanguageChange = async (lang: 'en' | 'kn') => {
+  const handleLanguageChange = (lang: 'en' | 'kn') => {
     setLanguage(lang)
-    if (ownerProfile) {
-      await supabase
-        .from('owner_profiles')
-        .update({ language: lang })
-        .eq('id', ownerProfile.id)
-      await refreshProfile()
-    }
     showSaved('language')
   }
 
-  const handleProfileSave = async () => {
-    if (!ownerProfile) return
-    setSaving(true)
-    await supabase
-      .from('owner_profiles')
-      .update({
-        name,
-        phone,
-        property_name: propertyName,
-        property_address: propertyAddress,
-        upi_id: upiId || null,
-      })
-      .eq('id', ownerProfile.id)
-    await refreshProfile()
-    setSaving(false)
+  const handleProfileSave = () => {
     showSaved('profile')
   }
 
-  const handleRentPreferenceSave = async (value: ProrationType) => {
+  const handleRentPreferenceSave = (value: ProrationType) => {
     setRentProration(value)
-    if (!ownerProfile) return
-    await supabase
-      .from('owner_profiles')
-      .update({ rent_proration: value })
-      .eq('id', ownerProfile.id)
-    await refreshProfile()
     showSaved('rent')
   }
 
-  const handleNotificationSave = async () => {
-    if (!ownerProfile) return
-    setSaving(true)
-    await supabase
-      .from('owner_profiles')
-      .update({
-        reminder_days_before: reminderDaysBefore,
-        overdue_alert_days: overdueAlertDays,
-      })
-      .eq('id', ownerProfile.id)
-    await refreshProfile()
-    setSaving(false)
+  const handleNotificationSave = () => {
     showSaved('notifications')
-  }
-
-  const handleLogout = async () => {
-    await supabase.auth.signOut()
-    router.push('/auth/login')
   }
 
   return (
     <AppShell>
-      <div className="max-w-lg mx-auto px-4 py-6 space-y-6">
+      <div className="space-y-6">
         <h2 className="text-2xl font-extrabold text-gray-900">{t('settings')}</h2>
 
         {/* 1. Language Toggle */}
@@ -159,32 +103,11 @@ export default function SettingsPage() {
             )}
           </div>
           <div className="space-y-4">
-            <Input
-              label="Owner Name"
-              id="owner-name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Your full name"
-            />
-            <Input
-              label="Phone"
-              id="owner-phone"
-              type="tel"
-              value={phone}
-              onChange={(e) => setPhone(e.target.value)}
-              placeholder="Phone number"
-            />
-            <Input
-              label="Property Name"
-              id="property-name"
-              value={propertyName}
-              onChange={(e) => setPropertyName(e.target.value)}
-              placeholder="e.g. Namma PG for Men"
-            />
+            <Input label="Owner Name" id="owner-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Your full name" />
+            <Input label="Phone" id="owner-phone" type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="Phone number" />
+            <Input label="Property Name" id="property-name" value={propertyName} onChange={(e) => setPropertyName(e.target.value)} placeholder="e.g. Namma PG for Men" />
             <div className="w-full">
-              <label htmlFor="property-address" className="block text-sm font-semibold text-gray-700 mb-1">
-                Property Address
-              </label>
+              <label htmlFor="property-address" className="block text-sm font-semibold text-gray-700 mb-1">Property Address</label>
               <textarea
                 id="property-address"
                 value={propertyAddress}
@@ -195,20 +118,10 @@ export default function SettingsPage() {
               />
             </div>
             <div>
-              <Input
-                label="UPI ID"
-                id="upi-id"
-                value={upiId}
-                onChange={(e) => setUpiId(e.target.value)}
-                placeholder="yourname@upi"
-              />
-              <p className="mt-1 text-xs text-gray-500">
-                Used to generate payment QR code on tenant profiles
-              </p>
+              <Input label="UPI ID" id="upi-id" value={upiId} onChange={(e) => setUpiId(e.target.value)} placeholder="yourname@upi" />
+              <p className="mt-1 text-xs text-gray-500">Used to generate payment QR code on tenant profiles</p>
             </div>
-            <Button onClick={handleProfileSave} disabled={saving} size="lg">
-              {saving ? 'Saving...' : 'Save Profile'}
-            </Button>
+            <Button onClick={handleProfileSave} size="lg">Save Profile</Button>
           </div>
         </Card>
 
@@ -220,16 +133,12 @@ export default function SettingsPage() {
               <span className="text-sm font-semibold text-green-600">Saved!</span>
             )}
           </div>
-          <p className="text-sm text-gray-500 mb-4">
-            When a tenant moves in mid-month, charge full month or pro-rate?
-          </p>
+          <p className="text-sm text-gray-500 mb-4">When a tenant moves in mid-month, charge full month or pro-rate?</p>
           <div className="grid grid-cols-2 gap-3">
             <button
               onClick={() => handleRentPreferenceSave('full_month')}
               className={`py-3 px-4 rounded-xl text-base font-semibold transition-all ${
-                rentProration === 'full_month'
-                  ? 'bg-blue-600 text-white shadow-md'
-                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                rentProration === 'full_month' ? 'bg-blue-600 text-white shadow-md' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
               }`}
             >
               Full Month
@@ -237,9 +146,7 @@ export default function SettingsPage() {
             <button
               onClick={() => handleRentPreferenceSave('pro_rated')}
               className={`py-3 px-4 rounded-xl text-base font-semibold transition-all ${
-                rentProration === 'pro_rated'
-                  ? 'bg-blue-600 text-white shadow-md'
-                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                rentProration === 'pro_rated' ? 'bg-blue-600 text-white shadow-md' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
               }`}
             >
               Pro-Rated
@@ -256,34 +163,16 @@ export default function SettingsPage() {
             )}
           </div>
           <div className="space-y-4">
-            <Input
-              label="Reminder days before due date"
-              id="reminder-days"
-              type="number"
-              min={0}
-              max={30}
-              value={reminderDaysBefore}
-              onChange={(e) => setReminderDaysBefore(Number(e.target.value))}
-            />
-            <Input
-              label="Overdue alert days after due date"
-              id="overdue-days"
-              type="number"
-              min={0}
-              max={30}
-              value={overdueAlertDays}
-              onChange={(e) => setOverdueAlertDays(Number(e.target.value))}
-            />
-            <Button onClick={handleNotificationSave} disabled={saving} size="lg">
-              {saving ? 'Saving...' : 'Save Notifications'}
-            </Button>
+            <Input label="Reminder days before due date" id="reminder-days" type="number" min={0} max={30} value={reminderDaysBefore} onChange={(e) => setReminderDaysBefore(Number(e.target.value))} />
+            <Input label="Overdue alert days after due date" id="overdue-days" type="number" min={0} max={30} value={overdueAlertDays} onChange={(e) => setOverdueAlertDays(Number(e.target.value))} />
+            <Button onClick={handleNotificationSave} size="lg">Save Notifications</Button>
           </div>
         </Card>
 
-        {/* 5. Logout */}
+        {/* 5. Logout (disabled in demo) */}
         <Card>
-          <Button variant="danger" size="lg" onClick={handleLogout}>
-            Logout
+          <Button variant="danger" size="lg" disabled>
+            Logout (Demo Mode)
           </Button>
         </Card>
       </div>

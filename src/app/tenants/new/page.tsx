@@ -1,10 +1,10 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import AppShell from '@/components/layout/AppShell'
 import { useApp } from '@/contexts/AppContext'
-import { createClient } from '@/lib/supabase-browser'
+import { mockTenants, mockBeds, mockRooms, mockFloors, mockRentCycles, mockPayments, mockDepositInstallments } from '@/lib/mock-data'
 import Button from '@/components/ui/Button'
 import Card from '@/components/ui/Card'
 import Input from '@/components/ui/Input'
@@ -19,10 +19,27 @@ interface BedWithDetails extends Bed {
 
 export default function NewTenantPage() {
   const { t, ownerProfile, loading: appLoading } = useApp()
-  const supabase = createClient()
   const router = useRouter()
 
-  const [availableBeds, setAvailableBeds] = useState<BedWithDetails[]>([])
+  // Build available beds with joined room/floor data
+  const availableBeds: BedWithDetails[] = useMemo(() => {
+    return mockBeds
+      .filter((b) => b.status === 'empty')
+      .map((bed) => {
+        const room = mockRooms.find((r) => r.id === bed.room_id)
+        const floor = room ? mockFloors.find((f) => f.id === room.floor_id) : undefined
+        return {
+          ...bed,
+          room: room
+            ? {
+                ...room,
+                floor: floor || undefined,
+              }
+            : undefined,
+        }
+      })
+  }, [])
+
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
 
@@ -38,25 +55,6 @@ export default function NewTenantPage() {
   const [monthlyRentRupees, setMonthlyRentRupees] = useState('')
   const [securityDepositRupees, setSecurityDepositRupees] = useState('')
   const [aadhaarNumber, setAadhaarNumber] = useState('')
-
-  useEffect(() => {
-    if (!ownerProfile) return
-
-    const fetchBeds = async () => {
-      const { data, error } = await supabase
-        .from('beds')
-        .select('*, room:rooms(*, floor:floors(*))')
-        .eq('owner_id', ownerProfile.id)
-        .eq('status', 'empty')
-        .order('label')
-
-      if (!error && data) {
-        setAvailableBeds(data as BedWithDetails[])
-      }
-    }
-
-    fetchBeds()
-  }, [ownerProfile])
 
   // Group beds by floor/room for the dropdown
   const bedOptions = (() => {
@@ -103,89 +101,10 @@ export default function NewTenantPage() {
     setError('')
 
     try {
-      const monthlyRent = toPaise(parseFloat(monthlyRentRupees))
-      const securityDeposit = securityDepositRupees ? toPaise(parseFloat(securityDepositRupees)) : 0
+      const newId = Math.random().toString(36).slice(2)
 
-      // 1. Insert tenant
-      const { data: newTenant, error: tenantError } = await supabase
-        .from('tenants')
-        .insert({
-          owner_id: ownerProfile.id,
-          full_name: fullName.trim(),
-          phone: phone.trim(),
-          emergency_contact_name: emergencyContactName.trim() || null,
-          emergency_contact_phone: emergencyContactPhone.trim() || null,
-          move_in_date: moveInDate,
-          notice_period_days: noticePeriodDays,
-          bed_id: selectedBedId,
-          room_type: roomType,
-          monthly_rent: monthlyRent,
-          security_deposit: securityDeposit,
-          aadhaar_number: aadhaarNumber.trim() || null,
-          status: 'active',
-        })
-        .select()
-        .single()
-
-      if (tenantError || !newTenant) {
-        throw new Error(tenantError?.message || 'Failed to create tenant')
-      }
-
-      // 2. Find the selected bed to get room_id
-      const selectedBed = availableBeds.find((b) => b.id === selectedBedId)
-
-      if (roomType === 'private' && selectedBed?.room_id) {
-        // 3. If private room, block ALL beds in the room and set tenant_id
-        const { data: roomBeds } = await supabase
-          .from('beds')
-          .select('id')
-          .eq('room_id', selectedBed.room_id)
-
-        if (roomBeds) {
-          for (const bed of roomBeds) {
-            await supabase
-              .from('beds')
-              .update({
-                status: bed.id === selectedBedId ? 'occupied' : 'blocked',
-                tenant_id: newTenant.id,
-              })
-              .eq('id', bed.id)
-          }
-        }
-      } else {
-        // 2. Update selected bed to occupied
-        await supabase
-          .from('beds')
-          .update({ status: 'occupied', tenant_id: newTenant.id })
-          .eq('id', selectedBedId)
-      }
-
-      // 4. Create first rent_cycle for the move-in month
-      const moveIn = new Date(moveInDate)
-      const cycleMonth = `${moveIn.getFullYear()}-${String(moveIn.getMonth() + 1).padStart(2, '0')}`
-
-      // Determine if prorated
-      const isProrated = ownerProfile.rent_proration === 'pro_rated' && moveIn.getDate() > 1
-      let amountDue = monthlyRent
-      if (isProrated) {
-        const daysInMonth = new Date(moveIn.getFullYear(), moveIn.getMonth() + 1, 0).getDate()
-        const remainingDays = daysInMonth - moveIn.getDate() + 1
-        amountDue = Math.round((monthlyRent / daysInMonth) * remainingDays)
-      }
-
-      await supabase.from('rent_cycles').insert({
-        tenant_id: newTenant.id,
-        owner_id: ownerProfile.id,
-        cycle_month: cycleMonth,
-        due_date: moveInDate,
-        amount_due: amountDue,
-        amount_paid: 0,
-        status: 'pending',
-        is_prorated: isProrated,
-      })
-
-      // 5. Redirect to the new tenant page
-      router.push(`/tenants/${newTenant.id}`)
+      // In demo mode, just redirect to the tenants list
+      router.push('/tenants')
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'An error occurred'
       setError(message)

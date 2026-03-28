@@ -1,6 +1,6 @@
 'use client'
 
-import { Suspense, useEffect, useState, useCallback } from 'react'
+import { Suspense, useEffect, useState, useCallback, useMemo } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { useApp } from '@/contexts/AppContext'
@@ -11,7 +11,7 @@ import Button from '@/components/ui/Button'
 import Input from '@/components/ui/Input'
 import Modal from '@/components/ui/Modal'
 import Select from '@/components/ui/Select'
-import { createClient } from '@/lib/supabase-browser'
+import { mockTenants, mockRentCycles, mockPayments } from '@/lib/mock-data'
 import { formatCurrency, formatDate, toPaise, toRupees, monthLabel } from '@/lib/utils'
 import type { Tenant, RentCycle, RentCycleWithPayments, Payment, PaymentMode } from '@/types/database'
 
@@ -26,12 +26,15 @@ export default function PaymentsPageWrapper() {
 function PaymentsPage() {
   const { t, ownerProfile, loading: appLoading } = useApp()
   const searchParams = useSearchParams()
-  const supabase = createClient()
 
-  const [tenants, setTenants] = useState<Tenant[]>([])
+  const [tenants] = useState<Tenant[]>(() =>
+    mockTenants
+      .filter((t) => t.status === 'active' || t.status === 'notice_period')
+      .sort((a, b) => a.full_name.localeCompare(b.full_name))
+  )
   const [selectedTenantId, setSelectedTenantId] = useState<string>('')
-  const [rentCycles, setRentCycles] = useState<RentCycleWithPayments[]>([])
-  const [loading, setLoading] = useState(true)
+  const [allPayments, setAllPayments] = useState<Payment[]>(() => [...mockPayments])
+  const [allRentCycles, setAllRentCycles] = useState<RentCycle[]>(() => [...mockRentCycles])
   const [expandedCycleId, setExpandedCycleId] = useState<string | null>(null)
 
   // Modal state
@@ -44,70 +47,29 @@ function PaymentsPage() {
   const [paymentNotes, setPaymentNotes] = useState('')
   const [saving, setSaving] = useState(false)
 
-  // Fetch tenants
+  // Pre-select from URL param
   useEffect(() => {
-    if (!ownerProfile) return
-
-    async function fetchTenants() {
-      const { data } = await supabase
-        .from('tenants')
-        .select('*')
-        .eq('owner_id', ownerProfile!.id)
-        .in('status', ['active', 'notice_period'])
-        .order('full_name')
-
-      if (data) {
-        setTenants(data)
-        // Pre-select from URL param
-        const urlTenant = searchParams.get('tenant')
-        if (urlTenant && data.some((t) => t.id === urlTenant)) {
-          setSelectedTenantId(urlTenant)
-        }
-      }
-      setLoading(false)
+    const urlTenant = searchParams.get('tenant')
+    if (urlTenant && tenants.some((t) => t.id === urlTenant)) {
+      setSelectedTenantId(urlTenant)
     }
+  }, [searchParams, tenants])
 
-    fetchTenants()
-  }, [ownerProfile])
+  // Derive rent cycles with payments for the selected tenant
+  const rentCycles: RentCycleWithPayments[] = useMemo(() => {
+    if (!selectedTenantId) return []
 
-  // Fetch rent cycles when tenant changes
-  const fetchRentCycles = useCallback(async () => {
-    if (!ownerProfile || !selectedTenantId) {
-      setRentCycles([])
-      return
-    }
+    const cycles = allRentCycles
+      .filter((c) => c.tenant_id === selectedTenantId)
+      .sort((a, b) => b.due_date.localeCompare(a.due_date))
 
-    const { data: cycles } = await supabase
-      .from('rent_cycles')
-      .select('*')
-      .eq('owner_id', ownerProfile.id)
-      .eq('tenant_id', selectedTenantId)
-      .order('due_date', { ascending: false })
-
-    if (!cycles) {
-      setRentCycles([])
-      return
-    }
-
-    // Fetch payments for all cycles
-    const cycleIds = cycles.map((c) => c.id)
-    const { data: payments } = await supabase
-      .from('payments')
-      .select('*')
-      .in('rent_cycle_id', cycleIds.length > 0 ? cycleIds : ['__none__'])
-      .order('payment_date', { ascending: false })
-
-    const cyclesWithPayments: RentCycleWithPayments[] = cycles.map((cycle) => ({
+    return cycles.map((cycle) => ({
       ...cycle,
-      payments: (payments || []).filter((p) => p.rent_cycle_id === cycle.id),
+      payments: allPayments
+        .filter((p) => p.rent_cycle_id === cycle.id)
+        .sort((a, b) => b.payment_date.localeCompare(a.payment_date)),
     }))
-
-    setRentCycles(cyclesWithPayments)
-  }, [ownerProfile, selectedTenantId])
-
-  useEffect(() => {
-    fetchRentCycles()
-  }, [fetchRentCycles])
+  }, [selectedTenantId, allRentCycles, allPayments])
 
   function openPaymentModal(cycle: RentCycleWithPayments) {
     const remaining = cycle.amount_due - cycle.amount_paid
@@ -120,7 +82,7 @@ function PaymentsPage() {
     setModalOpen(true)
   }
 
-  async function handleSavePayment() {
+  function handleSavePayment() {
     if (!modalCycle || !ownerProfile || !paymentMode) return
 
     const amountPaise = toPaise(parseFloat(paymentAmount) || 0)
@@ -130,8 +92,8 @@ function PaymentsPage() {
 
     setSaving(true)
 
-    // Insert payment
-    const { error: paymentError } = await supabase.from('payments').insert({
+    const newPayment: Payment = {
+      id: Math.random().toString(36).slice(2),
       rent_cycle_id: modalCycle.id,
       tenant_id: selectedTenantId,
       owner_id: ownerProfile.id,
@@ -140,30 +102,27 @@ function PaymentsPage() {
       payment_date: paymentDate,
       late_fee: lateFeePaise,
       notes: paymentNotes || null,
-    })
-
-    if (paymentError) {
-      setSaving(false)
-      return
+      created_at: new Date().toISOString(),
     }
+
+    setAllPayments((prev) => [...prev, newPayment])
 
     // Update rent cycle
     const newAmountPaid = modalCycle.amount_paid + amountPaise
     const newStatus: RentCycle['status'] =
       newAmountPaid >= modalCycle.amount_due ? 'paid' : newAmountPaid > 0 ? 'partial' : 'pending'
 
-    await supabase
-      .from('rent_cycles')
-      .update({
-        amount_paid: newAmountPaid,
-        status: newStatus,
-      })
-      .eq('id', modalCycle.id)
+    setAllRentCycles((prev) =>
+      prev.map((c) =>
+        c.id === modalCycle.id
+          ? { ...c, amount_paid: newAmountPaid, status: newStatus }
+          : c
+      )
+    )
 
     setSaving(false)
     setModalOpen(false)
     setModalCycle(null)
-    await fetchRentCycles()
   }
 
   function statusBadgeVariant(status: RentCycle['status']): 'red' | 'yellow' | 'green' {
@@ -177,7 +136,7 @@ function PaymentsPage() {
     ...tenants.map((tn) => ({ value: tn.id, label: tn.full_name })),
   ]
 
-  if (appLoading || loading) {
+  if (appLoading) {
     return (
       <AppShell>
         <div className="flex items-center justify-center min-h-[60vh]">

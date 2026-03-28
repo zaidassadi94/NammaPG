@@ -8,7 +8,7 @@ import Button from '@/components/ui/Button'
 import Input from '@/components/ui/Input'
 import Select from '@/components/ui/Select'
 import Card from '@/components/ui/Card'
-import { createClient } from '@/lib/supabase-browser'
+import { mockRooms, mockFloors, mockTenants, mockBeds } from '@/lib/mock-data'
 import { toPaise } from '@/lib/utils'
 import type { Room, Tenant } from '@/types/database'
 
@@ -25,7 +25,6 @@ interface TenantOption {
 
 export default function NewMaintenancePage() {
   const { ownerProfile, loading: appLoading } = useApp()
-  const supabase = createClient()
   const router = useRouter()
 
   const [rooms, setRooms] = useState<RoomOption[]>([])
@@ -45,8 +44,17 @@ export default function NewMaintenancePage() {
 
   useEffect(() => {
     if (!ownerProfile) return
-    fetchRooms()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
+    // Build room options from mock data
+    const mapped: RoomOption[] = mockRooms.map((r) => {
+      const floor = mockFloors.find((f) => f.id === r.floor_id)
+      return {
+        id: r.id,
+        name: r.name,
+        floor_name: floor?.name || '',
+      }
+    })
+    setRooms(mapped)
   }, [ownerProfile])
 
   useEffect(() => {
@@ -55,56 +63,20 @@ export default function NewMaintenancePage() {
       setReportedBy('')
       return
     }
-    fetchTenantsForRoom(roomId)
+
+    // Find tenants whose bed is in the selected room
+    const bedsInRoom = mockBeds
+      .filter((b) => b.room_id === roomId && b.tenant_id != null)
+      .map((b) => b.tenant_id!)
+
+    const activeTenants: TenantOption[] = mockTenants
+      .filter((t) => bedsInRoom.includes(t.id) && t.status === 'active')
+      .map((t) => ({ id: t.id, full_name: t.full_name }))
+
+    setTenants(activeTenants)
+    setReportedBy('')
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId])
-
-  async function fetchRooms() {
-    const { data } = await supabase
-      .from('rooms')
-      .select('id, name, floor:floors(name)')
-      .eq('owner_id', ownerProfile!.id)
-      .order('sort_order')
-
-    if (data) {
-      const mapped: RoomOption[] = data.map((r: any) => ({
-        id: r.id,
-        name: r.name,
-        floor_name: r.floor?.name || '',
-      }))
-      setRooms(mapped)
-    }
-  }
-
-  async function fetchTenantsForRoom(selectedRoomId: string) {
-    // Get beds in this room, then find active tenants assigned to those beds
-    const { data: beds } = await supabase
-      .from('beds')
-      .select('tenant_id')
-      .eq('room_id', selectedRoomId)
-      .not('tenant_id', 'is', null)
-
-    if (beds && beds.length > 0) {
-      const tenantIds = beds.map((b: any) => b.tenant_id).filter(Boolean)
-      if (tenantIds.length > 0) {
-        const { data: tenantData } = await supabase
-          .from('tenants')
-          .select('id, full_name')
-          .in('id', tenantIds)
-          .eq('status', 'active')
-
-        if (tenantData) {
-          setTenants(tenantData)
-        }
-      } else {
-        setTenants([])
-      }
-    } else {
-      setTenants([])
-    }
-
-    setReportedBy('')
-  }
 
   function validate(): boolean {
     const newErrors: Record<string, string> = {}
@@ -124,26 +96,26 @@ export default function NewMaintenancePage() {
     const isOwnerReported = reportedBy === 'owner'
     const tenantId = isOwnerReported ? null : reportedBy
 
-    const insertData: Record<string, any> = {
+    const newLog = {
+      id: Math.random().toString(36).slice(2),
       owner_id: ownerProfile.id,
       room_id: roomId,
       reported_by_tenant_id: tenantId,
       reported_by_owner: isOwnerReported,
       description: description.trim(),
       date_reported: dateReported,
-      status: 'reported',
+      status: 'reported' as const,
       repair_cost: repairCost ? toPaise(parseFloat(repairCost)) : null,
+      photo_before_url: null,
+      photo_after_url: null,
+      date_fixed: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     }
 
-    const { error } = await supabase
-      .from('maintenance_logs')
-      .insert(insertData)
-
-    if (error) {
-      console.error('Failed to create maintenance log:', error)
-      setSubmitting(false)
-      return
-    }
+    // Add to mock data array (in-memory only)
+    const { mockMaintenanceLogs } = await import('@/lib/mock-data')
+    mockMaintenanceLogs.push(newLog)
 
     router.push('/maintenance')
   }
